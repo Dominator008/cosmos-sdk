@@ -19,7 +19,6 @@ import (
 	"github.com/cosmos/cosmos-sdk/x/slashing/types"
 	"github.com/cosmos/cosmos-sdk/x/staking"
 	"github.com/cosmos/cosmos-sdk/x/staking/teststaking"
-	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 )
 
 func TestCannotUnjailUnlessJailed(t *testing.T) {
@@ -29,17 +28,12 @@ func TestCannotUnjailUnlessJailed(t *testing.T) {
 	pks := simapp.CreateTestPubKeys(1)
 	simapp.AddTestAddrsFromPubKeys(app, ctx, pks, sdk.TokensFromConsensusPower(200))
 
+	tstaking := teststaking.NewService(ctx, app.StakingKeeper)
 	slh := slashing.NewHandler(app.SlashingKeeper)
-	amt := sdk.TokensFromConsensusPower(100)
 	addr, val := sdk.ValAddress(pks[0].Address()), pks[0]
 
-	msg := keeper.NewTestMsgCreateValidator(addr, val, amt, t)
-	res, err := staking.NewHandler(app.StakingKeeper)(ctx, msg)
-	require.NoError(t, err)
-	require.NotNil(t, res)
-
+	amt := tstaking.CreateValidatorWithValPower(t, addr, val, 100, teststaking.ZeroCommission())
 	staking.EndBlocker(ctx, app.StakingKeeper)
-
 	require.Equal(
 		t, app.BankKeeper.GetAllBalances(ctx, sdk.AccAddress(addr)),
 		sdk.Coins{sdk.NewCoin(app.StakingKeeper.GetParams(ctx).BondDenom, keeper.InitTokens.Sub(amt))},
@@ -85,25 +79,17 @@ func TestJailedValidatorDelegations(t *testing.T) {
 	// initial setup
 	app := simapp.Setup(false)
 	ctx := app.BaseApp.NewContext(false, tmproto.Header{Time: time.Unix(0, 0)})
-
 	pks := simapp.CreateTestPubKeys(3)
+
 	simapp.AddTestAddrsFromPubKeys(app, ctx, pks, sdk.TokensFromConsensusPower(20))
 	app.SlashingKeeper.SetParams(ctx, keeper.TestParams())
 
+	tstaking := teststaking.NewService(ctx, app.StakingKeeper)
 	stakingParams := app.StakingKeeper.GetParams(ctx)
 	app.StakingKeeper.SetParams(ctx, stakingParams)
-
-	// create a validator
-	bondAmount := sdk.TokensFromConsensusPower(10)
-	valPubKey := pks[1]
 	valAddr, consAddr := sdk.ValAddress(pks[1].Address()), sdk.ConsAddress(pks[0].Address())
 
-	msgCreateVal := keeper.NewTestMsgCreateValidator(valAddr, valPubKey, bondAmount, t)
-	res, err := staking.NewHandler(app.StakingKeeper)(ctx, msgCreateVal)
-	require.NoError(t, err)
-	require.NotNil(t, res)
-
-	// end block
+	amt := tstaking.CreateValidatorWithValPower(t, valAddr, pks[1], 10, teststaking.ZeroCommission())
 	staking.EndBlocker(ctx, app.StakingKeeper)
 
 	// set dummy signing info
@@ -112,19 +98,11 @@ func TestJailedValidatorDelegations(t *testing.T) {
 
 	// delegate tokens to the validator
 	delAddr := sdk.AccAddress(pks[2].Address())
-	msgDelegate := keeper.NewTestMsgDelegate(delAddr, valAddr, bondAmount)
-	res, err = staking.NewHandler(app.StakingKeeper)(ctx, msgDelegate)
-	require.NoError(t, err)
-	require.NotNil(t, res)
-
-	unbondAmt := sdk.NewCoin(app.StakingKeeper.GetParams(ctx).BondDenom, bondAmount)
+	teststaking.Delegate(t, delAddr, valAddr, amt)
 
 	// unbond validator total self-delegations (which should jail the validator)
-	msgUndelegate := stakingtypes.NewMsgUndelegate(sdk.AccAddress(valAddr), valAddr, unbondAmt)
-	res, err = staking.NewHandler(app.StakingKeeper)(ctx, msgUndelegate)
-	require.NoError(t, err)
-	require.NotNil(t, res)
-
+	valAcc := sdk.AccAddress(valAddr)
+	teststaking.Undelegate(t, valAcc, valAddr, amt, app.StakingKeeper.GetParams(ctx).BondDenom)
 	_, err = app.StakingKeeper.CompleteUnbonding(ctx, sdk.AccAddress(valAddr), valAddr)
 	require.Nil(t, err, "expected complete unbonding validator to be ok, got: %v", err)
 
@@ -139,10 +117,7 @@ func TestJailedValidatorDelegations(t *testing.T) {
 	require.Nil(t, res)
 
 	// self-delegate to validator
-	msgSelfDelegate := keeper.NewTestMsgDelegate(sdk.AccAddress(valAddr), valAddr, bondAmount)
-	res, err = staking.NewHandler(app.StakingKeeper)(ctx, msgSelfDelegate)
-	require.NoError(t, err)
-	require.NotNil(t, res)
+	teststaking.Delegate(t, valAcc, valAddr, amt)
 
 	// verify the validator can now unjail itself
 	res, err = slashing.NewHandler(app.SlashingKeeper)(ctx, types.NewMsgUnjail(valAddr))
@@ -171,15 +146,11 @@ func TestHandleAbsentValidator(t *testing.T) {
 	app.SlashingKeeper.SetParams(ctx, keeper.TestParams())
 
 	power := int64(100)
-	amt := sdk.TokensFromConsensusPower(power)
 	addr, val := sdk.ValAddress(pks[0].Address()), pks[0]
-	sh := staking.NewHandler(app.StakingKeeper)
 	slh := slashing.NewHandler(app.SlashingKeeper)
+	tstaking := teststaking.NewService(ctx, app.StakingKeeper)
 
-	res, err := sh(ctx, keeper.NewTestMsgCreateValidator(addr, val, amt))
-	require.NoError(t, err)
-	require.NotNil(t, res)
-
+	amt := tstaking.CreateValidatorWithValPower(t, addr, val, power, teststaking.ZeroCommission())
 	staking.EndBlocker(ctx, app.StakingKeeper)
 
 	require.Equal(
